@@ -18,160 +18,100 @@ public class ForkliftQueueFunctionTests
         return context;
     }
 
+    /// <summary>Builds a valid 3-line raw queue message string.</summary>
+    private static string BuildRawMessage(Guid transactionId, string source, string accountId, string message, string timestamp)
+        => $"{transactionId}\n{{\"source\":\"{source}\",\"Id\":\"{accountId}\",\"Message\":\"{message}\"}}\n{timestamp}";
+
     [Fact]
     public async Task Run_NewMessage_InsertsRecord()
     {
         // Arrange
         using var db = CreateInMemoryDbContext(nameof(Run_NewMessage_InsertsRecord));
         var function = new ForkliftQueueFunction(db, NullLogger<ForkliftQueueFunction>.Instance);
-        var message = new QueueMessage
-        {
-            Id = "forklift-1",
-            Timestamp = new DateTimeOffset(2024, 1, 1, 12, 0, 0, TimeSpan.Zero),
-            Status = "active",
-            Location = "warehouse-A"
-        };
+        var guid = Guid.NewGuid();
+        var rawMessage = BuildRawMessage(guid, "fake_bank_transactions_1000.csv", "tx0001",
+            "Direct debit SEK 97.77 (Internet subscription)", "3/17/2026, 12:42:55 PM");
 
         // Act
-        await function.Run(message);
+        await function.Run(rawMessage);
 
         // Assert
-        var stored = await db.ForkliftEvents.FindAsync("forklift-1");
+        var stored = await db.Transactions.FindAsync(guid);
         Assert.NotNull(stored);
-        Assert.Equal("forklift-1", stored.Id);
-        Assert.Equal(message.Timestamp, stored.Timestamp);
-        Assert.Equal("active", stored.Status);
+        Assert.Equal(guid, stored.TransactionId);
+        Assert.Equal("tx0001", stored.AccountId);
+        Assert.Equal("fake_bank_transactions_1000.csv", stored.Source);
+        Assert.Equal("Direct debit SEK 97.77 (Internet subscription)", stored.Message);
+        Assert.NotNull(stored.EventTs);
+        Assert.NotNull(stored.OriginalJson);
     }
 
     [Fact]
-    public async Task Run_NewerMessage_UpdatesExistingRecord()
+    public async Task Run_DuplicateTransactionId_IsSkipped()
     {
         // Arrange
-        using var db = CreateInMemoryDbContext(nameof(Run_NewerMessage_UpdatesExistingRecord));
-        var olderTimestamp = new DateTimeOffset(2024, 1, 1, 10, 0, 0, TimeSpan.Zero);
-        var newerTimestamp = new DateTimeOffset(2024, 1, 1, 12, 0, 0, TimeSpan.Zero);
-
-        db.ForkliftEvents.Add(new ForkliftEvent
-        {
-            Id = "forklift-1",
-            Timestamp = olderTimestamp,
-            Status = "idle",
-            LastUpdated = olderTimestamp
-        });
-        await db.SaveChangesAsync();
-
+        using var db = CreateInMemoryDbContext(nameof(Run_DuplicateTransactionId_IsSkipped));
         var function = new ForkliftQueueFunction(db, NullLogger<ForkliftQueueFunction>.Instance);
-        var newerMessage = new QueueMessage
-        {
-            Id = "forklift-1",
-            Timestamp = newerTimestamp,
-            Status = "active",
-            Location = "warehouse-B"
-        };
+        var guid = Guid.NewGuid();
+        var rawMessage = BuildRawMessage(guid, "test.csv", "tx0001", "Payment A", "3/17/2026, 12:42:55 PM");
 
-        // Act
-        await function.Run(newerMessage);
+        // Act – send the same GUID twice
+        await function.Run(rawMessage);
+        await function.Run(rawMessage);
 
-        // Assert
-        var stored = await db.ForkliftEvents.FindAsync("forklift-1");
-        Assert.NotNull(stored);
-        Assert.Equal(newerTimestamp, stored.Timestamp);
-        Assert.Equal("active", stored.Status);
+        // Assert – only one record should exist
+        Assert.Equal(1, await db.Transactions.CountAsync());
     }
 
     [Fact]
-    public async Task Run_OlderMessage_DoesNotUpdateExistingRecord()
+    public async Task Run_MultipleDistinctTransactions_StoredSeparately()
     {
         // Arrange
-        using var db = CreateInMemoryDbContext(nameof(Run_OlderMessage_DoesNotUpdateExistingRecord));
-        var currentTimestamp = new DateTimeOffset(2024, 1, 1, 12, 0, 0, TimeSpan.Zero);
-        var olderTimestamp = new DateTimeOffset(2024, 1, 1, 10, 0, 0, TimeSpan.Zero);
-
-        db.ForkliftEvents.Add(new ForkliftEvent
-        {
-            Id = "forklift-1",
-            Timestamp = currentTimestamp,
-            Status = "active",
-            LastUpdated = currentTimestamp
-        });
-        await db.SaveChangesAsync();
-
+        using var db = CreateInMemoryDbContext(nameof(Run_MultipleDistinctTransactions_StoredSeparately));
         var function = new ForkliftQueueFunction(db, NullLogger<ForkliftQueueFunction>.Instance);
-        var olderMessage = new QueueMessage
-        {
-            Id = "forklift-1",
-            Timestamp = olderTimestamp,
-            Status = "idle",
-            Location = "dock-2"
-        };
+        var guid1 = Guid.NewGuid();
+        var guid2 = Guid.NewGuid();
 
         // Act
-        await function.Run(olderMessage);
+        await function.Run(BuildRawMessage(guid1, "test.csv", "tx0001", "Payment A", "3/17/2026, 12:42:55 PM"));
+        await function.Run(BuildRawMessage(guid2, "test.csv", "tx0002", "Payment B", "3/17/2026, 1:00:00 PM"));
 
         // Assert
-        var stored = await db.ForkliftEvents.FindAsync("forklift-1");
-        Assert.NotNull(stored);
-        Assert.Equal(currentTimestamp, stored.Timestamp);
-        Assert.Equal("active", stored.Status);
-    }
-
-    [Fact]
-    public async Task Run_SameTimestampMessage_DoesNotUpdateExistingRecord()
-    {
-        // Arrange
-        using var db = CreateInMemoryDbContext(nameof(Run_SameTimestampMessage_DoesNotUpdateExistingRecord));
-        var timestamp = new DateTimeOffset(2024, 1, 1, 12, 0, 0, TimeSpan.Zero);
-
-        db.ForkliftEvents.Add(new ForkliftEvent
-        {
-            Id = "forklift-1",
-            Timestamp = timestamp,
-            Status = "active",
-            LastUpdated = timestamp
-        });
-        await db.SaveChangesAsync();
-
-        var function = new ForkliftQueueFunction(db, NullLogger<ForkliftQueueFunction>.Instance);
-        var duplicateMessage = new QueueMessage
-        {
-            Id = "forklift-1",
-            Timestamp = timestamp,
-            Status = "charging",
-            Location = "dock-3"
-        };
-
-        // Act
-        await function.Run(duplicateMessage);
-
-        // Assert - same timestamp should NOT trigger an update
-        var stored = await db.ForkliftEvents.FindAsync("forklift-1");
-        Assert.NotNull(stored);
-        Assert.Equal(timestamp, stored.Timestamp);
-        Assert.Equal("active", stored.Status);
-    }
-
-    [Fact]
-    public async Task Run_MultipleDistinctIds_StoresEachSeparately()
-    {
-        // Arrange
-        using var db = CreateInMemoryDbContext(nameof(Run_MultipleDistinctIds_StoresEachSeparately));
-        var function = new ForkliftQueueFunction(db, NullLogger<ForkliftQueueFunction>.Instance);
-        var timestamp = new DateTimeOffset(2024, 1, 1, 12, 0, 0, TimeSpan.Zero);
-
-        var message1 = new QueueMessage { Id = "forklift-1", Timestamp = timestamp, Status = "active", Location = "zone-A" };
-        var message2 = new QueueMessage { Id = "forklift-2", Timestamp = timestamp, Status = "idle", Location = "zone-B" };
-
-        // Act
-        await function.Run(message1);
-        await function.Run(message2);
-
-        // Assert
-        Assert.Equal(2, await db.ForkliftEvents.CountAsync());
-        var stored1 = await db.ForkliftEvents.FindAsync("forklift-1");
-        var stored2 = await db.ForkliftEvents.FindAsync("forklift-2");
+        Assert.Equal(2, await db.Transactions.CountAsync());
+        var stored1 = await db.Transactions.FindAsync(guid1);
+        var stored2 = await db.Transactions.FindAsync(guid2);
         Assert.NotNull(stored1);
         Assert.NotNull(stored2);
-        Assert.Equal("active", stored1.Status);
-        Assert.Equal("idle", stored2.Status);
+        Assert.Equal("tx0001", stored1.AccountId);
+        Assert.Equal("tx0002", stored2.AccountId);
+    }
+
+    [Fact]
+    public async Task Run_MalformedMessage_IsSkipped()
+    {
+        // Arrange
+        using var db = CreateInMemoryDbContext(nameof(Run_MalformedMessage_IsSkipped));
+        var function = new ForkliftQueueFunction(db, NullLogger<ForkliftQueueFunction>.Instance);
+
+        // Act – only 1 line, not 3
+        await function.Run("only-one-line");
+
+        // Assert – nothing should be inserted
+        Assert.Equal(0, await db.Transactions.CountAsync());
+    }
+
+    [Fact]
+    public async Task Run_InvalidGuid_IsSkipped()
+    {
+        // Arrange
+        using var db = CreateInMemoryDbContext(nameof(Run_InvalidGuid_IsSkipped));
+        var function = new ForkliftQueueFunction(db, NullLogger<ForkliftQueueFunction>.Instance);
+        var rawMessage = "not-a-guid\n{\"source\":\"test.csv\",\"Id\":\"tx0001\",\"Message\":\"Payment\"}\n3/17/2026, 12:42:55 PM";
+
+        // Act
+        await function.Run(rawMessage);
+
+        // Assert
+        Assert.Equal(0, await db.Transactions.CountAsync());
     }
 }

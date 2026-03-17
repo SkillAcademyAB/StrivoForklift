@@ -12,7 +12,12 @@ var host = new HostBuilder()
             ?? "Data Source=forklift.db";
 
         services.AddDbContext<ForkliftDbContext>(options =>
-            options.UseSqlite(connectionString));
+        {
+            if (connectionString.TrimStart().StartsWith("Data Source=", StringComparison.OrdinalIgnoreCase))
+                options.UseSqlite(connectionString);
+            else
+                options.UseSqlServer(connectionString);
+        });
     })
     .Build();
 

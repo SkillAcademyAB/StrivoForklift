@@ -1,5 +1,6 @@
+using System.Globalization;
+using System.Text.Json;
 using Microsoft.Azure.Functions.Worker;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using StrivoForklift.Data;
 using StrivoForklift.Models;
@@ -8,9 +9,11 @@ namespace StrivoForklift;
 
 /// <summary>
 /// Azure Function triggered by messages on the "consumethis" Azure Storage Queue.
-/// Each message is deserialized as a <see cref="QueueMessage"/> and upserted into the
-/// database: a new record is inserted if none exists for that ID, or the record is
-/// updated only when the incoming message has a more recent timestamp.
+/// Each message is a three-line text payload:
+///   Line 1 – transaction GUID (maps to transaction_id)
+///   Line 2 – JSON body with source, Id, and Message fields
+///   Line 3 – event timestamp (e.g. "3/17/2026, 12:42:55 PM")
+/// Transactions are inserted on first receipt; duplicate GUIDs are silently skipped.
 /// </summary>
 public class ForkliftQueueFunction
 {
@@ -25,43 +28,74 @@ public class ForkliftQueueFunction
 
     [Function(nameof(ForkliftQueueFunction))]
     public async Task Run(
-        [QueueTrigger("consumethis", Connection = "StorageConnectionString")] QueueMessage message)
+        [QueueTrigger("consumethis", Connection = "StorageConnectionString")] string rawMessage)
     {
-        _logger.LogInformation(
-            "Processing queue message for Id: {Id}, Timestamp: {Timestamp}",
-            message.Id, message.Timestamp);
-
-        var existing = await _dbContext.ForkliftEvents.FindAsync(message.Id);
-
-        if (existing is null)
+        var lines = rawMessage.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (lines.Length < 3)
         {
-            _dbContext.ForkliftEvents.Add(new ForkliftEvent
-            {
-                Id = message.Id,
-                Timestamp = message.Timestamp,
-                Status = message.Status,
-                LastUpdated = DateTimeOffset.UtcNow
-            });
-
-            _logger.LogInformation("Inserted new ForkliftEvent with Id: {Id}", message.Id);
-            await _dbContext.SaveChangesAsync();
+            _logger.LogWarning(
+                "Received malformed queue message; expected 3 lines but got {Count}. Message skipped.",
+                lines.Length);
+            return;
         }
-        else if (message.Timestamp > existing.Timestamp)
-        {
-            existing.Timestamp = message.Timestamp;
-            existing.Status = message.Status;
-            existing.LastUpdated = DateTimeOffset.UtcNow;
 
-            _logger.LogInformation(
-                "Updated ForkliftEvent with Id: {Id} to Timestamp: {Timestamp}",
-                message.Id, message.Timestamp);
-            await _dbContext.SaveChangesAsync();
+        if (!Guid.TryParse(lines[0], out var transactionId))
+        {
+            _logger.LogWarning("Failed to parse transaction GUID from: {Line}", lines[0]);
+            return;
+        }
+
+        var jsonLine = lines[1];
+        QueueMessage? payload;
+        try
+        {
+            payload = JsonSerializer.Deserialize<QueueMessage>(jsonLine);
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex, "Failed to deserialize JSON payload: {Json}", jsonLine);
+            return;
+        }
+
+        if (payload is null)
+        {
+            _logger.LogWarning("Deserialized JSON payload was null. Message skipped.");
+            return;
+        }
+
+        DateTime? eventTs = null;
+        if (DateTime.TryParse(lines[2], CultureInfo.GetCultureInfo("en-US"), DateTimeStyles.AllowWhiteSpaces, out var parsedTs))
+        {
+            eventTs = parsedTs;
         }
         else
         {
-            _logger.LogInformation(
-                "Skipped outdated message for Id: {Id}. Existing Timestamp: {Existing}, Incoming: {Incoming}",
-                message.Id, existing.Timestamp, message.Timestamp);
+            _logger.LogWarning("Could not parse event timestamp from: {Line}", lines[2]);
         }
+
+        _logger.LogInformation(
+            "Processing transaction Id: {TransactionId}, AccountId: {AccountId}",
+            transactionId, payload.Id);
+
+        var existing = await _dbContext.Transactions.FindAsync(transactionId);
+        if (existing is not null)
+        {
+            _logger.LogInformation("Skipped duplicate transaction Id: {TransactionId}", transactionId);
+            return;
+        }
+
+        _dbContext.Transactions.Add(new Transaction
+        {
+            TransactionId = transactionId,
+            AccountId = payload.Id,
+            Source = payload.Source,
+            Message = payload.Message,
+            EventTs = eventTs,
+            OriginalJson = jsonLine,
+            InsertionTime = DateTime.UtcNow
+        });
+        await _dbContext.SaveChangesAsync();
+
+        _logger.LogInformation("Inserted transaction Id: {TransactionId}", transactionId);
     }
 }

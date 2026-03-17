@@ -4,7 +4,7 @@ using StrivoForklift.Models;
 namespace StrivoForklift.Data;
 
 /// <summary>
-/// EF Core database context for forklift event storage.
+/// EF Core database context for bank transaction storage.
 /// </summary>
 public class ForkliftDbContext : DbContext
 {
@@ -12,16 +12,22 @@ public class ForkliftDbContext : DbContext
     {
     }
 
-    public DbSet<ForkliftEvent> ForkliftEvents { get; set; }
+    public DbSet<Transaction> Transactions { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.Entity<ForkliftEvent>(entity =>
+        modelBuilder.Entity<Transaction>(entity =>
         {
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.Id).IsRequired();
-            entity.Property(e => e.Timestamp).IsRequired();
-            entity.Property(e => e.LastUpdated).IsRequired();
+            entity.ToTable("transactions", "dbo");
+            entity.HasKey(e => e.TransactionId);
+            entity.Property(e => e.TransactionId).IsRequired();
+            entity.Property(e => e.AccountId).HasMaxLength(100);
+            entity.Property(e => e.Source).HasMaxLength(255);
+            entity.Property(e => e.InsertionTime)
+                  .IsRequired()
+                  .HasDefaultValueSql("SYSUTCDATETIME()");
+            entity.HasIndex(e => e.AccountId)
+                  .HasDatabaseName("IX_transactions_account_id");
         });
     }
 }

@@ -1,21 +1,29 @@
 namespace StrivoForklift.Models;
 
 /// <summary>
-/// Represents a forklift event record stored in the database.
-/// Each record corresponds to a unique forklift/entity identifier and holds
-/// the most recent (highest-timestamp) event data received from the queue.
+/// Represents a bank transaction record stored in the database.
+/// Maps to the dbo.transactions table in Azure SQL.
 /// </summary>
-public class ForkliftEvent
+public class Transaction
 {
-    /// <summary>Unique identifier for the forklift or event entity (primary key).</summary>
-    public string Id { get; set; } = string.Empty;
+    /// <summary>Unique identifier for the transaction (primary key, GUID parsed from the queue message).</summary>
+    public Guid TransactionId { get; set; }
 
-    /// <summary>Timestamp of the most recent event applied to this record.</summary>
-    public DateTimeOffset Timestamp { get; set; }
+    /// <summary>Account identifier from the JSON payload (JSON $.Id, not unique).</summary>
+    public string? AccountId { get; set; }
 
-    /// <summary>Operational status from the most recent event.</summary>
-    public string? Status { get; set; }
+    /// <summary>Source file or system that originated the transaction (JSON $.source).</summary>
+    public string? Source { get; set; }
 
-    /// <summary>UTC time when this database record was last written.</summary>
-    public DateTimeOffset LastUpdated { get; set; }
+    /// <summary>Human-readable transaction description (JSON $.Message).</summary>
+    public string? Message { get; set; }
+
+    /// <summary>Timestamp of the event, parsed from the third line of the queue message.</summary>
+    public DateTime? EventTs { get; set; }
+
+    /// <summary>The original JSON payload from the queue message.</summary>
+    public string? OriginalJson { get; set; }
+
+    /// <summary>UTC time when this record was inserted into the database.</summary>
+    public DateTime InsertionTime { get; set; }
 }

@@ -3,23 +3,19 @@ using System.Text.Json.Serialization;
 namespace StrivoForklift.Models;
 
 /// <summary>
-/// Represents a forklift event message received from the Azure Storage Queue.
+/// Represents the JSON payload embedded in a bank transaction queue message.
 /// </summary>
 public class QueueMessage
 {
-    /// <summary>Unique identifier for the forklift or event entity.</summary>
-    [JsonPropertyName("id")]
-    public string Id { get; set; } = string.Empty;
+    /// <summary>Source file or system that originated the transaction (e.g. "fake_bank_transactions_1000.csv").</summary>
+    [JsonPropertyName("source")]
+    public string? Source { get; set; }
 
-    /// <summary>Timestamp of the event, used to determine message recency.</summary>
-    [JsonPropertyName("timestamp")]
-    public DateTimeOffset Timestamp { get; set; }
+    /// <summary>Account identifier for the transaction (e.g. "tx0001").</summary>
+    [JsonPropertyName("Id")]
+    public string? Id { get; set; }
 
-    /// <summary>Operational status of the forklift (e.g. "active", "idle", "charging").</summary>
-    [JsonPropertyName("status")]
-    public string? Status { get; set; }
-
-    /// <summary>Current location of the forklift (e.g. "warehouse-A", "dock-3").</summary>
-    [JsonPropertyName("location")]
-    public string? Location { get; set; }
+    /// <summary>Human-readable transaction description (e.g. "Direct debit SEK 97.77 (Internet subscription)").</summary>
+    [JsonPropertyName("Message")]
+    public string? Message { get; set; }
 }
