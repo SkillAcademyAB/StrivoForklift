@@ -7,20 +7,29 @@ namespace StrivoForklift.Tests;
 
 /// <summary>
 /// Verifies that the host builder startup validation raises a clear error when
-/// the StorageQueue__serviceUri setting is absent, mirroring the fail-fast guard
-/// in Program.cs that prevents the queue trigger from silently never polling.
+/// the StorageQueue__serviceUri setting is absent or misconfigured, mirroring the
+/// fail-fast guard in Program.cs that prevents the queue trigger from silently never polling.
 /// </summary>
 public class HostStartupTests
 {
+    private const string ValidServiceUri = "https://consumeddata.queue.core.windows.net";
+
     /// <summary>
-    /// Builds a minimal <see cref="IHostBuilder"/> that applies the same
-    /// null-coalescing throw guard used in Program.cs.
+    /// Builds a minimal <see cref="IHostBuilder"/> that applies the same validation
+    /// logic used in Program.cs.
     /// </summary>
-    private static IHostBuilder BuildWithValidation(bool includeStorageQueueUri)
+    /// <param name="serviceUri">
+    /// The value to use for the StorageQueue:serviceUri setting, or
+    /// <see langword="null"/> to omit the setting entirely.
+    /// </param>
+    private static IHostBuilder BuildWithValidation(string? serviceUri)
     {
         var settings = new Dictionary<string, string?>();
-        if (includeStorageQueueUri)
-            settings["StorageQueue__serviceUri"] = "https://consumeddata.queue.core.windows.net";
+        // In-memory collection keys must use the ':' separator because .NET's
+        // EnvironmentVariablesConfigurationProvider translates '__' → ':' before
+        // values reach IConfiguration. Using ':' here mirrors production behaviour.
+        if (serviceUri is not null)
+            settings["StorageQueue:serviceUri"] = serviceUri;
 
         return new HostBuilder()
             .ConfigureAppConfiguration(cfg =>
@@ -30,13 +39,26 @@ public class HostStartupTests
             })
             .ConfigureServices((context, services) =>
             {
-                _ = context.Configuration["StorageQueue__serviceUri"]
+                var storageQueueServiceUri = context.Configuration["StorageQueue:serviceUri"]
                     ?? throw new InvalidOperationException(
-                        "Missing required app setting 'StorageQueue__serviceUri'. " +
+                        "Missing required app setting 'StorageQueue__serviceUri' " +
+                        "(set as the environment variable 'StorageQueue__serviceUri', " +
+                        "which IConfiguration exposes as 'StorageQueue:serviceUri'). " +
                         "Set this to the Azure Queue Storage service URI " +
                         "(e.g. https://<account>.queue.core.windows.net). " +
                         "The Managed Identity must also hold the " +
                         "'Storage Queue Data Message Processor' role on the storage account.");
+
+                if (Uri.TryCreate(storageQueueServiceUri, UriKind.Absolute, out var parsedUri)
+                    && parsedUri.AbsolutePath.Trim('/').Length > 0)
+                {
+                    throw new InvalidOperationException(
+                        $"The app setting 'StorageQueue__serviceUri' has an unexpected path component " +
+                        $"('{parsedUri.AbsolutePath}'). " +
+                        $"This setting must be the storage-account-level queue service endpoint with no path " +
+                        $"(e.g. https://<account>.queue.core.windows.net). " +
+                        $"Remove the queue name from the URI — it is already declared in the QueueTrigger attribute.");
+                }
             });
     }
 
@@ -47,7 +69,7 @@ public class HostStartupTests
         // Program.cs throws immediately so the developer sees a clear error rather
         // than a function that is "live" but silently never triggers.
         var ex = Assert.Throws<InvalidOperationException>(
-            () => BuildWithValidation(includeStorageQueueUri: false).Build());
+            () => BuildWithValidation(serviceUri: null).Build());
 
         Assert.Contains("StorageQueue__serviceUri", ex.Message);
         Assert.Contains("Storage Queue Data Message Processor", ex.Message);
@@ -56,11 +78,26 @@ public class HostStartupTests
     [Fact]
     public void Build_PresentStorageQueueServiceUri_DoesNotThrow()
     {
-        // When the setting is present the host should build without error,
-        // and the configuration value should be accessible to binding resolution.
-        using var host = BuildWithValidation(includeStorageQueueUri: true).Build();
+        // When the setting is a valid account-level URI the host should build without error.
+        using var host = BuildWithValidation(ValidServiceUri).Build();
         Assert.NotNull(host);
         var config = host.Services.GetRequiredService<IConfiguration>();
-        Assert.Equal("https://consumeddata.queue.core.windows.net", config["StorageQueue__serviceUri"]);
+        Assert.Equal(ValidServiceUri, config["StorageQueue:serviceUri"]);
+    }
+
+    [Fact]
+    public void Build_ServiceUriContainsQueueName_ThrowsInvalidOperationException()
+    {
+        // A common portal misconfiguration is appending the queue name to the service URI
+        // (e.g. https://<account>.queue.core.windows.net/consumethis).
+        // Program.cs must detect this and surface a clear, actionable error.
+        var uriWithQueueName = ValidServiceUri + "/consumethis";
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => BuildWithValidation(uriWithQueueName).Build());
+
+        Assert.Contains("/consumethis", ex.Message);
+        Assert.Contains("QueueTrigger attribute", ex.Message);
     }
 }
+
