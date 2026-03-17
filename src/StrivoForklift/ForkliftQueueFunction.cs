@@ -64,7 +64,9 @@ public class ForkliftQueueFunction
         }
 
         DateTime? eventTs = null;
-        if (DateTime.TryParse(lines[2], CultureInfo.GetCultureInfo("en-US"), DateTimeStyles.AllowWhiteSpaces, out var parsedTs))
+        // Expected timestamp format matches the queue message format: "M/d/yyyy, h:mm:ss tt" (e.g. "3/17/2026, 12:42:55 PM")
+        if (DateTime.TryParseExact(lines[2], "M/d/yyyy, h:mm:ss tt",
+                CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsedTs))
         {
             eventTs = parsedTs;
         }

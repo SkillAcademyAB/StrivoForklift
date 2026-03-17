@@ -24,8 +24,7 @@ public class ForkliftDbContext : DbContext
             entity.Property(e => e.AccountId).HasMaxLength(100);
             entity.Property(e => e.Source).HasMaxLength(255);
             entity.Property(e => e.InsertionTime)
-                  .IsRequired()
-                  .HasDefaultValueSql("SYSUTCDATETIME()");
+                  .IsRequired();
             entity.HasIndex(e => e.AccountId)
                   .HasDatabaseName("IX_transactions_account_id");
         });
