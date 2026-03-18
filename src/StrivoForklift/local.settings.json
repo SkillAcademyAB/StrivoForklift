@@ -3,9 +3,11 @@
   "Values": {
     "AzureWebJobsStorage": "UseDevelopmentStorage=true",
     "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
-    "StorageQueue__serviceUri": "https://consumeddata.queue.core.windows.net"
-  },
-  "ConnectionStrings": {
-    "SqlConnection": "Server=tcp:ingestdemo.database.windows.net,1433;Database=transaction_ingester;Authentication=Active Directory Default;Encrypt=True;TrustServerCertificate=False;"
+    "StorageQueue__serviceUri": "https://consumeddata.queue.core.windows.net",
+    "KeyVault__Uri": "https://kv-bear.vault.azure.net/",
+    "KeyVault__DbUsernameSecretName": "sql-db-username",
+    "KeyVault__DbPasswordSecretName": "sql-db-password",
+    "SqlServer__Server": "tcp:ingestdemo.database.windows.net,1433",
+    "SqlServer__Database": "transaction_ingester"
   }
 }

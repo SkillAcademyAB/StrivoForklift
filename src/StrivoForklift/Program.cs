@@ -1,3 +1,5 @@
+using Azure.Identity;
+using Azure.Security.KeyVault.Secrets;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -39,9 +41,76 @@ var host = new HostBuilder()
                 $"Remove the queue name from the URI — it is already declared in the QueueTrigger attribute.");
         }
 
-        var connectionString = context.Configuration.GetConnectionString("SqlConnection")
+        // Fetch the database username and password from Azure Key Vault.
+        // The Key Vault URI and the expected secret names are read from configuration so they
+        // can be overridden per environment without changing code.
+        // NOTE: DefaultAzureCredential uses the Function App's system-assigned managed identity
+        // in Azure, and falls back to the developer's local credential (Azure CLI / Visual Studio)
+        // during local development.
+        var keyVaultUri = context.Configuration["KeyVault:Uri"]
             ?? throw new InvalidOperationException(
-                "A 'SqlConnection' connection string must be provided in configuration.");
+                "Missing required app setting 'KeyVault:Uri' " +
+                "(set as the environment variable 'KeyVault__Uri'). " +
+                "Set this to the Azure Key Vault URI (e.g. https://kv-bear.vault.azure.net/). " +
+                "The Managed Identity must also hold the 'Key Vault Secrets User' role on the vault.");
+
+        var dbUsernameSecretName = context.Configuration["KeyVault:DbUsernameSecretName"]
+            ?? throw new InvalidOperationException(
+                "Missing required app setting 'KeyVault:DbUsernameSecretName' " +
+                "(set as the environment variable 'KeyVault__DbUsernameSecretName'). " +
+                "Set this to the name of the Key Vault secret that holds the database username.");
+
+        var dbPasswordSecretName = context.Configuration["KeyVault:DbPasswordSecretName"]
+            ?? throw new InvalidOperationException(
+                "Missing required app setting 'KeyVault:DbPasswordSecretName' " +
+                "(set as the environment variable 'KeyVault__DbPasswordSecretName'). " +
+                "Set this to the name of the Key Vault secret that holds the database password.");
+
+        var dbServer = context.Configuration["SqlServer:Server"]
+            ?? throw new InvalidOperationException(
+                "Missing required app setting 'SqlServer:Server' " +
+                "(set as the environment variable 'SqlServer__Server'). " +
+                "Set this to the SQL Server host including port " +
+                "(e.g. tcp:ingestdemo.database.windows.net,1433).");
+
+        var dbDatabase = context.Configuration["SqlServer:Database"]
+            ?? throw new InvalidOperationException(
+                "Missing required app setting 'SqlServer:Database' " +
+                "(set as the environment variable 'SqlServer__Database'). " +
+                "Set this to the name of the SQL database (e.g. transaction_ingester).");
+
+        var secretClient = new SecretClient(new Uri(keyVaultUri), new DefaultAzureCredential());
+
+        string dbUsername;
+        string dbPassword;
+        try
+        {
+            dbUsername = secretClient.GetSecret(dbUsernameSecretName).Value.Value;
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                $"Failed to retrieve the database username secret '{dbUsernameSecretName}' from Key Vault '{keyVaultUri}'. " +
+                $"Ensure the secret exists and the managed identity holds the 'Key Vault Secrets User' role on the vault. " +
+                $"Inner exception: {ex.Message}", ex);
+        }
+
+        try
+        {
+            dbPassword = secretClient.GetSecret(dbPasswordSecretName).Value.Value;
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                $"Failed to retrieve the database password secret '{dbPasswordSecretName}' from Key Vault '{keyVaultUri}'. " +
+                $"Ensure the secret exists and the managed identity holds the 'Key Vault Secrets User' role on the vault. " +
+                $"Inner exception: {ex.Message}", ex);
+        }
+
+        var connectionString =
+            $"Server={dbServer};Database={dbDatabase};" +
+            $"User Id={dbUsername};Password={dbPassword};" +
+            $"Encrypt=True;TrustServerCertificate=False;";
 
         services.AddDbContext<ForkliftDbContext>(options =>
             options.UseSqlServer(connectionString));
